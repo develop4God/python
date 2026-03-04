@@ -511,6 +511,7 @@ FOLDERS SCANNED: lib, i18n, test + pubspec.yml
                     diff_content += f"   Raw: {f.get('raw_url', 'N/A')}\n\nDIFF:\n{'-'*40}\n"
                     diff_content += f.get("patch", "⚠️  No diff (binary or too large)")
                     diff_content += f"\n{'-'*40}\n"
+                    diff_content += f"🔗 FULL FILE: {f.get('raw_url', 'N/A')}\n"
                 analysis_parts[f"04_diffs_pr_{pr_number}"] = diff_content
 
     return analysis_parts
