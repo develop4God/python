@@ -223,54 +223,31 @@ def generate_from_seed(seed_path, master_lang, master_version, output_dir):
                     continue
 
             if resp.status_code == 503:
-                raw_body = resp.text if resp.content else ""
-                print(f"  DEBUG 503 raw body: {raw_body[:300]}")
+                # 3s first — 90% of the time this resolves it
+                # if still failing by 60s the server is truly down
+                resolved = False
+                for attempt, wait in enumerate([3, 15, 30, 60], start=1):
+                    print(f"  503 — attempt {attempt}/4, waiting {wait}s...")
+                    time.sleep(wait)
+                    resp = requests.post(API_URL, json=payload, timeout=REQUEST_TIMEOUT)
+                    if resp.status_code == 200:
+                        resolved = True
+                        print(f"  ↩ resolved on attempt {attempt + 1}")
+                        break
 
-                # Try to parse — Gemini may have returned partial data inside the 503
-                partial_data = None
-                try:
-                    parsed = resp.json()
-                    detail = parsed.get("detail", "")
-                    # Check if body contains reflexion/oracion despite 503 status
-                    if parsed.get("reflexion") or parsed.get("oracion"):
-                        partial_data = parsed
-                        print(f"  DEBUG: partial data found in 503 body — reflexion: {bool(parsed.get('reflexion'))}, oracion: {bool(parsed.get('oracion'))}")
-                except Exception:
-                    detail = raw_body
-
-                if "QUOTA_ERROR" in detail:
-                    print("  503 QUOTA — daily limit hit, stopping run.")
+                if not resolved:
+                    # Save checkpoint at current date so resume retries same verse
+                    print(f"  503 exhausted — saving checkpoint at [{date_key}] ({cita})")
+                    save_checkpoint(completed, success_count, seed_path, master_lang, master_version)
                     error_dates.append({"date": date_key, "cita": cita,
-                                        "reason": detail, "raw_body": raw_body[:500]})
-                    break
-
-                # If we already have usable partial data, skip retry and use it
-                if partial_data and partial_data.get("reflexion") and partial_data.get("oracion"):
-                    print("  ✓ using partial data recovered from 503 body")
-                    resp._content = json.dumps(partial_data).encode("utf-8")
-                    resp.status_code = 200
-                else:
-                    # Transient overload — retry with exponential backoff
-                    wait = 15
-                    resolved = False
-                    for attempt in range(1, 6):
-                        print(f"  503 busy — attempt {attempt}/5, waiting {wait}s...")
-                        time.sleep(wait)
-                        resp = requests.post(API_URL, json=payload, timeout=REQUEST_TIMEOUT)
-                        print(f"  DEBUG retry {attempt} status: {resp.status_code} body: {resp.text[:200]}")
-                        if resp.status_code == 200:
-                            resolved = True
-                            print(f"  ↩ resolved on attempt {attempt + 1}")
-                            break
-                        wait = min(wait * 2, 120)   # 15 → 30 → 60 → 120 → 120
-                    if not resolved:
-                        print("  503 exhausted 5 retries — skipping date")
-                        error_count += 1
-                        error_dates.append({"date": date_key, "cita": cita,
-                                            "reason": "503 exhausted 5 retries",
-                                            "raw_body": resp.text[:500]})
-                        time.sleep(DELAY_BETWEEN)
-                        continue
+                                        "reason": "503 exhausted 4 retries — checkpoint saved, resume to retry same verse"})
+                    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+                    ep = os.path.join(output_dir, "generation_errors_" + master_lang + "_" + master_version + "_" + ts + ".json")
+                    with open(ep, "w", encoding="utf-8") as f:
+                        json.dump(error_dates, f, ensure_ascii=False, indent=2)
+                    print(f"  Errors -> {ep}")
+                    print("  Server appears down. Run again to resume from this date.")
+                    sys.exit(1)
 
             resp.raise_for_status()
             data      = resp.json()
